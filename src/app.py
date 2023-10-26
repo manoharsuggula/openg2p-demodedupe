@@ -15,6 +15,20 @@ import json
 
 app = FastAPI()
 
+deduper = ""
+
+def load_file_on_startup():
+    global deduper
+    try:
+        with open("settings_file", 'rb') as f:
+            deduper = dedupe.StaticDedupe(f)
+        print("File loaded")
+    except FileNotFoundError:
+        print("File not found.")
+
+@app.on_event("startup")
+async def startup_event():
+    load_file_on_startup()
 
 class DictInput(BaseModel):
     data: dict
@@ -27,67 +41,18 @@ class TrainingData(BaseModel):
    training_file: str
 
 
-@app.post("/train-dedupe/")
-async def train_deduper(input_data: DictInput, fields_data : ListInput):
-	try:
-		print("Training deduper...")
-		input_json = input_data.data
-		if isinstance(input_json, dict):
-			data_d = input_json
-		else:
-			data_d = json.loads(input_json)
-
-		f = fields_data.data
-		fields = []
-
-		for i in range(len(f)):
-			if isinstance(f[i], dict):
-				fields.append(f[i])
-			else:
-				fields.append(json.loads(f[i]))
-
-		
-		deduper = dedupe.Dedupe(fields)
-
-		deduper.prepare_training(data_d)
-
-		print('starting active labeling...')
-
-		dedupe.console_label(deduper)
-
-		print('Done with labeling...')
-
-		print('training...')
-		deduper.train()
-
-		settings_file = 'settings_file'
-		training_file = 'training.json'
-
-		with open(training_file, 'w') as tf:
-			deduper.write_training(tf)
-
-		with open(settings_file, 'wb') as sf:
-			deduper.write_settings(sf)
-
-	except Exception as e:
-		raise HTTPException(status_code=500, detail=str(e))
-
-	return {"message": "Deduper trained successfully"}
-
 @app.post("/deduplicate/")
-async def deduplicate(input_data: DictInput, files: TrainingData):
+async def deduplicate(input_data: DictInput):
 	try:
-		settings_file = files.settings_file
-		training_file = files.training_file
-
+		
 		input_json = input_data.data
 		if isinstance(input_json, dict):
 			data_d = input_json
 		else:
 			data_d = json.loads(input_json)
 		
-		with open(settings_file, 'rb') as f:
-			deduper = dedupe.StaticDedupe(f)
+		# with open(settings_file, 'rb') as f:
+		# 	deduper = dedupe.StaticDedupe(f)
 		
 			
 		print('clustering...')
@@ -104,24 +69,84 @@ async def deduplicate(input_data: DictInput, files: TrainingData):
 					"confidence_score": str(score)
 				}
 
-		output_dict = {}
 
-		for key in set(data_d) | set(cluster_membership):
-			output_dict[key] = {}
+		clusters = {}
 
-			for sub_dict in [data_d, cluster_membership]:
-				if key in sub_dict:
-					output_dict[key].update(sub_dict[key])
+		for record_id, cluster_info in cluster_membership.items():
+			cluster_id = cluster_info["Cluster ID"]
+			
+			if cluster_id not in clusters:
+				clusters[cluster_id] = []
 
-		print(output_dict)
-		output_dict = dict(itertools.islice(output_dict.items(), 100))
+			clusters[cluster_id].append(record_id)
+
+		print(clusters)
+
+		# output_dict = {}
+
+		# for key in set(data_d) | set(cluster_membership):
+		# 	output_dict[key] = {}
+
+		# 	for sub_dict in [data_d, cluster_membership]:
+		# 		if key in sub_dict:
+		# 			output_dict[key].update(sub_dict[key])
+
+		# print(output_dict)
+		# output_dict = dict(itertools.islice(output_dict.items(), 100))
 
 	except Exception as e:
 		raise HTTPException(status_code=500, detail=str(e))	
 
-	return output_dict
+	return clusters
 
 '''
 Files
 
 '''
+
+# @app.post("/train-dedupe/")
+# async def train_deduper(input_data: DictInput, fields_data : ListInput):
+# 	try:
+# 		print("Training deduper...")
+# 		input_json = input_data.data
+# 		if isinstance(input_json, dict):
+# 			data_d = input_json
+# 		else:
+# 			data_d = json.loads(input_json)
+
+# 		f = fields_data.data
+# 		fields = []
+
+# 		for i in range(len(f)):
+# 			if isinstance(f[i], dict):
+# 				fields.append(f[i])
+# 			else:
+# 				fields.append(json.loads(f[i]))
+
+		
+# 		deduper = dedupe.Dedupe(fields)
+
+# 		deduper.prepare_training(data_d)
+
+# 		print('starting active labeling...')
+
+# 		dedupe.console_label(deduper)
+
+# 		print('Done with labeling...')
+
+# 		print('training...')
+# 		deduper.train()
+
+# 		settings_file = 'settings_file'
+# 		training_file = 'training.json'
+
+# 		with open(training_file, 'w') as tf:
+# 			deduper.write_training(tf)
+
+# 		with open(settings_file, 'wb') as sf:
+# 			deduper.write_settings(sf)
+
+# 	except Exception as e:
+# 		raise HTTPException(status_code=500, detail=str(e))
+
+# 	return {"message": "Deduper trained successfully"}
