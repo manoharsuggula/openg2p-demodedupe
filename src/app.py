@@ -11,12 +11,21 @@ from typing import List, Dict
 from io import StringIO
 import csv
 from unidecode import unidecode
+import aiofiles
+import uuid
+import asyncio
+from fastapi.responses import FileResponse
+
 
 import numpy as np
 import dedupe
 import json
 
 app = FastAPI()
+
+csv_queue = {}
+csv_input_directory = 'csv_input'
+csv_output_directory = 'csv_output'
 
 deduper = ""
 
@@ -44,71 +53,80 @@ class TrainingData(BaseModel):
    training_file: str
 
 def preProcess(column):
-    column = unidecode(column)
-    column = re.sub('  +', ' ', column)
-    column = re.sub('\n', ' ', column)
-    column = column.strip().strip('"').strip("'").lower().strip()
-    
-    if not column:
-        column = None
-    return column
+	column = unidecode(column)
+	column = re.sub('  +', ' ', column)
+	column = re.sub('\n', ' ', column)
+	column = column.strip().strip('"').strip("'").lower().strip()
+	
+	if not column:
+		column = None
+	return column
 
-@app.post("/csv_deduplicate/")
-def upload(threshold:float,file: UploadFile = File(...)):
-	try:
-		data_d = {}
-		contents = file.file.read()
-		buffer = StringIO(contents.decode('utf-8'))
-		reader = csv.DictReader(buffer)
+
+async def process(threshold, txn_id):
+	file_name = csv_input_directory+'/'+txn_id+'.csv'
+	data_d = {}
+	with open(file_name, 'r') as file:
+		reader = csv.DictReader(file)
 		for row in reader:
 			clean_row = [(k, preProcess(v)) for (k, v) in row.items()]
 			row_id = int(row['Id'])
 			data_d[row_id] = dict(clean_row)
-		
+	
 		field_names = []
 		if reader.fieldnames:
 			field_names = reader.fieldnames
 			print(field_names)
 
 
-		print('clustering...')
-		clustered_dupes = deduper.partition(data_d, threshold)
+	print('clustering...')
+	clustered_dupes = deduper.partition(data_d, threshold)
 
-		print('# duplicate sets', len(clustered_dupes))
+	print('# duplicate sets', len(clustered_dupes))
 
-		
-		cluster_membership = {}
-		for cluster_id, (records, scores) in enumerate(clustered_dupes):
-			for record_id, score in zip(records, scores):
-				cluster_membership[record_id] = {
-					"Cluster ID": str(cluster_id),
-					"confidence_score": str(score)
-				}
+	
+	cluster_membership = {}
+	for cluster_id, (records, scores) in enumerate(clustered_dupes):
+		for record_id, score in zip(records, scores):
+			cluster_membership[record_id] = {
+				"Cluster ID": str(cluster_id),
+				"confidence_score": str(score)
+			}
 
-		print(len(cluster_membership))
+	print(len(cluster_membership))
 
-		csv_content = StringIO()
+	with open(csv_output_directory+'/'+txn_id+'.csv', 'w') as csv_content:
 		writer = csv.DictWriter(csv_content, fieldnames=['Cluster ID', 'confidence_score'] + field_names)
 		writer.writeheader()
-	
+
 		for keys, values in cluster_membership.items():
 			values.update(data_d[keys])
 			writer.writerow(values)
 
-		response = Response(content=csv_content.getvalue())
-		response.headers["Content-Disposition"] = "attachment; filename=deduplication_output.csv"
-		response.media_type = "text/csv"
+	csv_queue[txn_id] = "completed"
 
 
-	except Exception as e:
-		raise HTTPException(status_code=500, detail=str(e))
-	buffer.close()
-	file.file.close()
-	return response
+@app.get("/csv_deduplicate_download/{txn_id}")
+async def csv_deduplicate_download(txn_id):
+	return FileResponse(csv_output_directory+'/'+txn_id+'.csv', media_type='text/csv', filename=txn_id+'.csv')
 
+@app.get("/csv_deduplicate_status/{txn_id}")
+async def csv_deduplicate_status(txn_id):
+	return {"status": csv_queue[txn_id]}
 
-@app.post("/deduplicate/")
-async def deduplicate(threshold:float,input_data: DictInput):
+@app.post("/csv_deduplicate/")
+async def csv_deduplicate(threshold:float, in_file: UploadFile):
+	txn_id = str(uuid.uuid4())
+	async with aiofiles.open(csv_input_directory+'/'+txn_id+'.csv', 'wb') as out_file:
+		content = await in_file.read()  # async read
+		await out_file.write(content)
+
+	asyncio.create_task(process(threshold, txn_id))
+	csv_queue[txn_id] = "processing"
+	return {"txn_id": txn_id}
+
+@app.post("/json_deduplicate/")
+async def json_deduplicate(threshold:float,input_data: DictInput):
 	try:
 		
 		input_json = input_data.data
