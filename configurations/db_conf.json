@@ -1,0 +1,16 @@
+{
+	"NAME": "dedupe_example",
+	"USER": "postgres",
+	"PASSWORD": "manu252001",
+	"HOST": "localhost",
+	"PORT": "5432",
+	"table": "processed_donors",
+	"id_field": "donor_id",
+	"fields": [
+		"name",
+		"address",
+		"city",
+		"state",
+		"zip"
+	]
+}

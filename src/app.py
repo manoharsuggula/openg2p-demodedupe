@@ -1,14 +1,15 @@
-from fastapi import FastAPI, HTTPException, File, UploadFile, Response
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, HTTPException, UploadFile
+# from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-import os
+# import os
 import re
-import time
+import io
+# import time
 import itertools
 import psycopg2
 import psycopg2.extras
 from typing import List, Dict
-from io import StringIO
+# from io import StringIO
 import csv
 from unidecode import unidecode
 import aiofiles
@@ -28,29 +29,171 @@ csv_input_directory = 'csv_input'
 csv_output_directory = 'csv_output'
 
 deduper = ""
+read_con = ""
+write_con = ""
+id_field = ""
+table = ""
+fields = []
 
-def load_file_on_startup(filename="settings_file"):
+def load_file_on_startup(filename="configurations/settings_file"):
 	global deduper
 	try:
 		with open(filename, 'rb') as f:
-			deduper = dedupe.StaticDedupe(f)
+			deduper = dedupe.StaticDedupe(f, num_cores=4)
 		print("File loaded")
 	except FileNotFoundError:
 		print("File not found.")
 
+def set_db_conf(db_conf):
+	global read_con, write_con, id_field, table, fields
+	read_con = psycopg2.connect(database=db_conf['NAME'],
+								user=db_conf['USER'],
+								password=db_conf['PASSWORD'],
+								host=db_conf['HOST'],
+								cursor_factory=psycopg2.extras.RealDictCursor)
+
+	write_con = psycopg2.connect(database=db_conf['NAME'],
+								user=db_conf['USER'],
+								password=db_conf['PASSWORD'],
+								host=db_conf['HOST'])
+	id_field = db_conf["id_field"]
+	table = db_conf["table"]
+	fields = db_conf["fields"]
+
 @app.on_event("startup")
 async def startup_event():
-	load_file_on_startup()
+	load_file_on_startup("configurations/pgsql_big_dedupe_example_settings")
 
-class DictInput(BaseModel):
-	data: dict
+	file_path = 'configurations/db_conf.json'
+	with open(file_path, 'r') as file:
+		db_conf = json.load(file)
+	set_db_conf(db_conf)
 
-class ListInput(BaseModel):
-	data: List[dict]
 
-class TrainingData(BaseModel):
-   settings_file: str
-   training_file: str
+
+########################## DB Dedupe ##########################
+class Readable(object):
+
+	def __init__(self, iterator):
+
+		self.output = io.StringIO()
+		self.writer = csv.writer(self.output)
+		self.iterator = iterator
+
+	def read(self, size):
+
+		self.writer.writerows(itertools.islice(self.iterator, size))
+
+		chunk = self.output.getvalue()
+		self.output.seek(0)
+		self.output.truncate(0)
+
+		return chunk
+
+def record_pairs(result_set):
+
+	for i, row in enumerate(result_set):
+		a_record_id, a_record, b_record_id, b_record = row
+		record_a = (a_record_id, a_record)
+		record_b = (b_record_id, b_record)
+
+		yield record_a, record_b
+
+
+def cluster_ids(clustered_dupes):
+
+	for cluster, scores in clustered_dupes:
+		cluster_id = cluster[0]
+		for donor_id, score in zip(cluster, scores):
+			yield donor_id, cluster_id, score
+
+@app.post("/db_deduplicate/")
+async def db_deduplicate(threshold):
+	print(fields)
+	SELECT_QUERY = "SELECT " + id_field + ", " + ', '.join(fields) + " from "+table
+	print(SELECT_QUERY)
+	print('creating blocking_map database')
+	with write_con:
+		with write_con.cursor() as cur:
+			cur.execute("DROP TABLE IF EXISTS blocking_map")
+			cur.execute("CREATE TABLE blocking_map "
+						"(block_key text, %s INTEGER)" % id_field)
+			
+	print('creating inverted index')
+
+	print(deduper.fingerprinter.index_fields.keys())
+	for field in deduper.fingerprinter.index_fields:
+		with read_con.cursor('field_values') as cur:
+			cur.execute("SELECT DISTINCT %s FROM %s" % (field, table))
+			field_data = (row[field] for row in cur)
+			deduper.fingerprinter.index(field_data, field)
+
+	print('writing blocking map')
+	with read_con.cursor('select') as read_cur:
+		read_cur.execute(SELECT_QUERY)
+
+		full_data = ((row[id_field], row) for row in read_cur)
+		b_data = deduper.fingerprinter(full_data)
+
+		with write_con:
+			with write_con.cursor() as write_cur:
+				write_cur.copy_expert('COPY blocking_map FROM STDIN WITH CSV',
+									  Readable(b_data),
+									  size=10000)
+				
+	deduper.fingerprinter.reset_indices()
+	with write_con:
+		with write_con.cursor() as cur:
+			cur.execute("CREATE UNIQUE INDEX ON blocking_map "
+						"(block_key text_pattern_ops, %s)" % id_field)
+			
+	with write_con:
+		with write_con.cursor() as cur:
+			cur.execute("DROP TABLE IF EXISTS entity_map")
+
+			print('creating entity_map database')
+			cur.execute("CREATE TABLE entity_map "
+						"(%s INTEGER, canon_id INTEGER, "
+						" cluster_score FLOAT, PRIMARY KEY(%s))" % (id_field, id_field))
+
+	query = f"""
+		SELECT a.{id_field},
+			row_to_json((SELECT d FROM (SELECT a.{', a.'.join(fields)}) d)),
+			b.{id_field},
+			row_to_json((SELECT d FROM (SELECT b.{', b.'.join(fields)}) d))
+		FROM (SELECT DISTINCT l.{id_field} as east, r.{id_field} as west
+			FROM blocking_map as l
+			INNER JOIN blocking_map as r
+			USING (block_key)
+			WHERE l.{id_field} < r.{id_field}) ids
+		INNER JOIN processed_donors a ON ids.east = a.{id_field}
+		INNER JOIN processed_donors b ON ids.west = b.{id_field}
+	"""
+	# print(query)
+
+	with read_con.cursor('pairs', cursor_factory=psycopg2.extensions.cursor) as read_cur:
+		read_cur.execute(query)
+
+		print('clustering...')
+		clustered_dupes = deduper.cluster(deduper.score(record_pairs(read_cur)),
+										  threshold=threshold)
+		
+		print('writing results')
+		with write_con:
+			with write_con.cursor() as write_cur:
+				write_cur.copy_expert('COPY entity_map FROM STDIN WITH CSV',
+									  Readable(cluster_ids(clustered_dupes)),
+									  size=10000)
+
+	with write_con:
+		with write_con.cursor() as cur:
+			cur.execute("CREATE INDEX head_index ON entity_map (canon_id)")
+
+	return {"message": "Done"}
+
+########################## DB Dedupe End ##########################
+
+########################## CSV Dedupe ##########################
 
 def preProcess(column):
 	column = unidecode(column)
@@ -125,6 +268,13 @@ async def csv_deduplicate(threshold:float, in_file: UploadFile):
 	csv_queue[txn_id] = "processing"
 	return {"txn_id": txn_id}
 
+########################## CSV Dedupe End ##########################
+
+########################## JSON Dedupe ##########################
+
+class DictInput(BaseModel):
+	data: dict
+
 @app.post("/json_deduplicate/")
 async def json_deduplicate(threshold:float,input_data: DictInput):
 	try:
@@ -160,24 +310,12 @@ async def json_deduplicate(threshold:float,input_data: DictInput):
 
 			clusters[cluster_id].append(record_id)
 
-		# print(clusters)
-
-		# output_dict = {}
-
-		# for key in set(data_d) | set(cluster_membership):
-		# 	output_dict[key] = {}
-
-		# 	for sub_dict in [data_d, cluster_membership]:
-		# 		if key in sub_dict:
-		# 			output_dict[key].update(sub_dict[key])
-
-		# print(output_dict)
-		# output_dict = dict(itertools.islice(output_dict.items(), 100))
-
 	except Exception as e:
 		raise HTTPException(status_code=500, detail=str(e))	
 
 	return clusters
+
+########################## JSON Dedupe End ##########################
 
 # @app.post("/train-dedupe/")
 # async def train_deduper(input_data: DictInput, fields_data : ListInput):
