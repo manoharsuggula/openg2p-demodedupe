@@ -8,11 +8,18 @@ if __name__ == '__main__':
 	
 	# ## Setup
 	# Name the Settings file and training files here Examples shown.
-	settings_file = 'pgsql_big_dedupe_example_settings'
-	training_file = 'pgsql_big_dedupe_example_training.json'
+	settings_file = 'db_settings'
+	training_file = 'db_training.json'
 
 
-	db_conf = {} #Fill the DB configuration here
+	#Fill the DB configuration here
+	db_conf = {
+		"NAME": "", #DB name
+		"USER": "",
+		"PASSWORD": "",
+		"HOST": "",
+		"PORT": ""
+	}
 	'''
 	Ex: {	"NAME": "dedupe_example", #DB name
 			"USER": "postgres",
@@ -21,6 +28,34 @@ if __name__ == '__main__':
 			"PORT": "5432",
 		}
 	'''
+
+	# Define the fields dedupe will pay attention to
+	# Fill in the fields of interest as shown
+	# Make sure that the fields you mention here are in the query below.
+	# Do not add id field here.
+
+	fields = [] 
+	
+
+	'''Ex:
+	fields = [{'field': 'name', 'type': 'String'},
+				{'field': 'address', 'type': 'String', 'has missing': True},
+				{'field': 'city', 'type': 'ShortString', 'has missing': True},
+				{'field': 'state', 'type': 'ShortString', 'has missing': True},
+				{'field': 'zip', 'type': 'ShortString', 'has missing': True},
+			]
+	# The address, city, and zip fields are often missing, so we'll
+	# tell dedupe that, and we'll learn a model that take that into
+	# account
+	'''
+
+	# write a query that will extract the data from the db for training. 
+	# The query should have the fields of interest as columns along with id field
+	# An example is shown below 
+	# Try to keep the number of rows to be less than 1500. Training might crash otherwise.
+	SELECT_QUERY = "SELECT donor_id, city, name, zip, state, address " \
+				   "from processed_donors limit 1500"
+
 
 
 
@@ -36,38 +71,11 @@ if __name__ == '__main__':
 								 host=db_conf['HOST'])
 					   
 	
-	# write a query that will extract the data from the db for training. 
-	# The query should have the fields of interest as columns along with id field
-	# An example is shown below 
-	# Try to keep the number of rows to be less than 3000. Training might crash otherwise.
-	SELECT_QUERY = "SELECT donor_id, city, name, zip, state, address " \
-				   "from processed_donors"
-
+	
 	# ## Training
-
-	
-	print("No settings file, creating deduper from scratch")
-
-	# Define the fields dedupe will pay attention to
-	#
-	fields = [] #Fill in the fields of interest as shown
-	# Make sure that the fields you mention here are in the query above.
-	# Do not add id field here.
-	
-
-	# The address, city, and zip fields are often missing, so we'll
-	# tell dedupe that, and we'll learn a model that take that into
-	# account
-	'''Ex:
-	fields = [{'field': 'name', 'type': 'String'},
-				{'field': 'address', 'type': 'String', 'has missing': True},
-				{'field': 'city', 'type': 'ShortString', 'has missing': True},
-				{'field': 'state', 'type': 'ShortString', 'has missing': True},
-				{'field': 'zip', 'type': 'ShortString', 'has missing': True},
-			]'''
 	
 	# Create a new deduper object and pass our data model to it.
-	deduper = dedupe.Dedupe(fields, num_cores=4)
+	deduper = dedupe.Dedupe(fields)
 	print("Created dedupe object")
 
 	# Named cursor runs server side with psycopg2

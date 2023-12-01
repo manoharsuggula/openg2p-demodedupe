@@ -1,10 +1,6 @@
-import os
 import csv
 import re
-import logging
-import optparse
 
-import json
 import dedupe
 from unidecode import unidecode
 
@@ -65,9 +61,11 @@ def train_csv(input_file, fields):
 		deduper.write_settings(sf)
 
 if __name__ == '__main__':
-	input_file = '' #Fill in the input file csv
+
+	input_file = '' #Fill in the input file csv path
 	
-	fields = [] #Fill in the fields of interest as shown
+	# You need to make sure that the fields you mention here are in the csv file. Do not add id field here.
+	fields = [] #Fill in the fields of interest as shown. 
 	'''Ex: 
 	fields = [
 			{'field': 'Site name', 'type': 'String'},

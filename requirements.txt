@@ -1,0 +1,8 @@
+dedupe
+psycopg2>=2.5.4
+unidecode>=0.04.16
+requests
+aiofiles
+asyncio
+uuid
+itertools

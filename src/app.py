@@ -1,15 +1,11 @@
 from fastapi import FastAPI, HTTPException, UploadFile
-# from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-# import os
 import re
 import io
-# import time
 import itertools
 import psycopg2
 import psycopg2.extras
 from typing import List, Dict
-# from io import StringIO
 import csv
 from unidecode import unidecode
 import aiofiles
@@ -29,6 +25,7 @@ csv_input_directory = 'csv_input'
 csv_output_directory = 'csv_output'
 
 deduper = ""
+
 read_con = ""
 write_con = ""
 id_field = ""
@@ -39,7 +36,7 @@ def load_file_on_startup(filename="configurations/settings_file"):
 	global deduper
 	try:
 		with open(filename, 'rb') as f:
-			deduper = dedupe.StaticDedupe(f, num_cores=4)
+			deduper = dedupe.StaticDedupe(f)
 		print("File loaded")
 	except FileNotFoundError:
 		print("File not found.")
@@ -166,8 +163,8 @@ async def db_deduplicate(threshold):
 			INNER JOIN blocking_map as r
 			USING (block_key)
 			WHERE l.{id_field} < r.{id_field}) ids
-		INNER JOIN processed_donors a ON ids.east = a.{id_field}
-		INNER JOIN processed_donors b ON ids.west = b.{id_field}
+		INNER JOIN {table} a ON ids.east = a.{id_field}
+		INNER JOIN {table} b ON ids.west = b.{id_field}
 	"""
 	# print(query)
 
@@ -215,7 +212,8 @@ async def process(threshold, txn_id):
 			clean_row = [(k, preProcess(v)) for (k, v) in row.items()]
 			row_id = int(row['Id'])
 			data_d[row_id] = dict(clean_row)
-	
+
+		# This field names will contain all the columns of csv not just fields of interest.
 		field_names = []
 		if reader.fieldnames:
 			field_names = reader.fieldnames
@@ -251,7 +249,10 @@ async def process(threshold, txn_id):
 
 @app.get("/csv_deduplicate_download/{txn_id}")
 async def csv_deduplicate_download(txn_id):
-	return FileResponse(csv_output_directory+'/'+txn_id+'.csv', media_type='text/csv', filename=txn_id+'.csv')
+	if(csv_queue[txn_id] == "completed"):
+		return FileResponse(csv_output_directory+'/'+txn_id+'.csv', media_type='text/csv', filename=txn_id+'.csv')
+	else:
+		return {"status": "processing"}
 
 @app.get("/csv_deduplicate_status/{txn_id}")
 async def csv_deduplicate_status(txn_id):
