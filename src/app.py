@@ -21,10 +21,12 @@ import json
 app = FastAPI()
 
 csv_queue = {}
+
 csv_input_directory = 'csv_input'
 csv_output_directory = 'csv_output'
 
 deduper = ""
+pg_deduper = ""
 
 read_con = ""
 write_con = ""
@@ -33,13 +35,25 @@ table = ""
 fields = []
 
 def load_file_on_startup(filename="configurations/settings_file"):
-	global deduper
 	try:
 		with open(filename, 'rb') as f:
 			deduper = dedupe.StaticDedupe(f)
 		print("File loaded")
 	except FileNotFoundError:
 		print("File not found.")
+	return deduper
+
+
+# Fill the db_conf.json file with the db configuration
+# The file should contain the following fields:
+# 	 NAME: Name of the database
+# 	 USER: Username of the database
+# 	 PASSWORD: Password of the database
+# 	 HOST: Host of the database
+# 	 PORT: Port of the database
+# 	 table: Table name to be used
+# 	 id_field: Primary key of the table
+# 	 fields: List of fields to be used for deduplication
 
 def set_db_conf(db_conf):
 	global read_con, write_con, id_field, table, fields
@@ -59,7 +73,9 @@ def set_db_conf(db_conf):
 
 @app.on_event("startup")
 async def startup_event():
-	load_file_on_startup("configurations/pgsql_big_dedupe_example_settings")
+	global pg_deduper, deduper
+	pg_deduper = load_file_on_startup("configurations/db_settings")
+	deduper = load_file_on_startup("configurations/settings_file")
 
 	file_path = 'configurations/db_conf.json'
 	with open(file_path, 'r') as file:
@@ -101,13 +117,13 @@ def cluster_ids(clustered_dupes):
 
 	for cluster, scores in clustered_dupes:
 		cluster_id = cluster[0]
-		for donor_id, score in zip(cluster, scores):
-			yield donor_id, cluster_id, score
+		for id, score in zip(cluster, scores):
+			yield id, cluster_id, score
 
 @app.post("/db_deduplicate/")
-async def db_deduplicate(threshold):
+async def db_deduplicate(threshold:float):
 	print(fields)
-	SELECT_QUERY = "SELECT " + id_field + ", " + ', '.join(fields) + " from "+table
+	SELECT_QUERY = "SELECT " + id_field + ", " + ', '.join(fields) + " from "+ table
 	print(SELECT_QUERY)
 	print('creating blocking_map database')
 	with write_con:
@@ -118,19 +134,19 @@ async def db_deduplicate(threshold):
 			
 	print('creating inverted index')
 
-	print(deduper.fingerprinter.index_fields.keys())
-	for field in deduper.fingerprinter.index_fields:
+	print(pg_deduper.fingerprinter.index_fields.keys())
+	for field in pg_deduper.fingerprinter.index_fields:
 		with read_con.cursor('field_values') as cur:
 			cur.execute("SELECT DISTINCT %s FROM %s" % (field, table))
 			field_data = (row[field] for row in cur)
-			deduper.fingerprinter.index(field_data, field)
+			pg_deduper.fingerprinter.index(field_data, field)
 
 	print('writing blocking map')
 	with read_con.cursor('select') as read_cur:
 		read_cur.execute(SELECT_QUERY)
 
 		full_data = ((row[id_field], row) for row in read_cur)
-		b_data = deduper.fingerprinter(full_data)
+		b_data = pg_deduper.fingerprinter(full_data)
 
 		with write_con:
 			with write_con.cursor() as write_cur:
@@ -138,7 +154,7 @@ async def db_deduplicate(threshold):
 									  Readable(b_data),
 									  size=10000)
 				
-	deduper.fingerprinter.reset_indices()
+	pg_deduper.fingerprinter.reset_indices()
 	with write_con:
 		with write_con.cursor() as cur:
 			cur.execute("CREATE UNIQUE INDEX ON blocking_map "
@@ -172,7 +188,7 @@ async def db_deduplicate(threshold):
 		read_cur.execute(query)
 
 		print('clustering...')
-		clustered_dupes = deduper.cluster(deduper.score(record_pairs(read_cur)),
+		clustered_dupes = pg_deduper.cluster(pg_deduper.score(record_pairs(read_cur)),
 										  threshold=threshold)
 		
 		print('writing results')
@@ -186,7 +202,9 @@ async def db_deduplicate(threshold):
 		with write_con.cursor() as cur:
 			cur.execute("CREATE INDEX head_index ON entity_map (canon_id)")
 
-	return {"message": "Done"}
+	return {"message": "success"}
+
+
 
 ########################## DB Dedupe End ##########################
 
