@@ -13,7 +13,7 @@ def preProcess(column):
 	column = re.sub('  +', ' ', column)
 	column = re.sub('\n', ' ', column)
 	column = column.strip().strip('"').strip("'").lower().strip()
-	# If data is missing, indicate that by setting the value to `None`
+	# If data is missing, indicate that by setting the value to 'None'
 	if not column:
 		column = None
 	return column
@@ -73,5 +73,5 @@ if __name__ == '__main__':
 			{'field': 'Zip', 'type': 'Exact', 'has missing': True},
 			{'field': 'Phone', 'type': 'String', 'has missing': True}
 	]'''
-	
+	# If the field has null values then add 'has missing': True in the field.
 	train_csv(input_file,fields)
