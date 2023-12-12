@@ -21,7 +21,8 @@ if __name__ == '__main__':
 		"PORT": ""
 	}
 	'''
-	Ex: {	"NAME": "dedupe_example", #DB name
+	Ex: {	
+			"NAME": "dedupe_example", #DB name
 			"USER": "postgres",
 			"PASSWORD": "xyz123",
 			"HOST": "localhost",
